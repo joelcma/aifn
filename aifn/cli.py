@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import sys
 from typing import Optional
 
+import click
 import typer
 from rich.console import Console
 from rich.table import Table
+from typer.core import TyperGroup
 
 from .paths import aifn_dir
 from .provider import ResolutionDecision, get_provider
@@ -13,7 +16,20 @@ from .runner import run_entrypoint
 from .scaffold import write_generated_function
 from .similarity import find_similar
 
-app = typer.Typer(help="AI-assisted local function registry CLI")
+
+class AIFNGroup(TyperGroup):
+    def resolve_command(self, ctx: click.Context, args: list[str]):
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError:
+            if args and not args[0].startswith("-"):
+                command = self.get_command(ctx, "call")
+                if command is not None:
+                    return "call", command, args
+            raise
+
+
+app = typer.Typer(cls=AIFNGroup, help="AI-assisted local function registry CLI")
 console = Console()
 
 
@@ -41,6 +57,18 @@ def prompt_for_provider(default: str) -> str:
             return normalize_provider_name(provider_name)
         except typer.BadParameter as exc:
             console.print(str(exc), style="red")
+
+
+def resolve_call_args(args: list[str] | None) -> list[str]:
+    resolved_args = list(args or [])
+    if resolved_args or sys.stdin.isatty():
+        return resolved_args
+
+    piped_input = sys.stdin.read()
+    if not piped_input:
+        return resolved_args
+
+    return [piped_input.rstrip("\n")]
 
 
 @app.command()
@@ -78,7 +106,7 @@ def call(
     """Call a local function, or scaffold it if it does not exist."""
     init_store()
     registry = Registry.load()
-    args = args or []
+    args = resolve_call_args(args)
 
     record = registry.find(name)
     if record:

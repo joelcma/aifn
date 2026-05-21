@@ -256,6 +256,7 @@ Rules:
 - Prefer pure functions: no filesystem, network, subprocess, eval, exec, environment variables, secrets, or shell calls.
 - Use only the Python standard library unless the requested task clearly requires otherwise.
 - Function arguments are received from the CLI as strings, so parse them inside the function when needed.
+- Generated functions must work naturally with shell pipelines: when called with one string argument, treat it as the primary input value.
 - The code must define a function named exactly canonical_name.
 - Tests must load the function from `.aifn/functions/<canonical_name>.py` using importlib.util and pathlib.
 - Do not include markdown fences.
