@@ -1,0 +1,23 @@
+[project]
+name = "aifn"
+version = "0.1.0"
+description = "AI-assisted local function registry CLI"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+aifn = "aifn.cli:app"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["aifn*"]
+exclude = ["functions*", "tests*"]
+
+[project.optional-dependencies]
+openai = ["openai>=1.30.0"]
