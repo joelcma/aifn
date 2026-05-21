@@ -50,8 +50,11 @@ def test_call_uses_selected_provider_and_registry_context(monkeypatch, tmp_path)
     monkeypatch.setattr("aifn.cli.find_similar", lambda registry, name: [])
     seen_provider_args = []
 
-    def fake_get_provider(name=None, model=None):
-        seen_provider_args.append((name, model))
+    registry.main_model = "project-main"
+    registry.fast_model = "project-fast"
+
+    def fake_get_provider(name=None, model=None, fast_model=None):
+        seen_provider_args.append((name, model, fast_model))
         return provider
 
     monkeypatch.setattr("aifn.cli.get_provider", fake_get_provider)
@@ -84,7 +87,7 @@ def test_call_uses_selected_provider_and_registry_context(monkeypatch, tmp_path)
     )
 
     assert result.exit_code == 0
-    assert seen_provider_args == [("openai", "gpt-test")]
+    assert seen_provider_args == [("openai", "gpt-test", "project-fast")]
     assert provider.calls == [
         {
             "name": "summarize_text",
@@ -120,7 +123,10 @@ def test_unknown_top_level_command_dispatches_to_call(monkeypatch, tmp_path):
 
     monkeypatch.setattr("aifn.cli.init_store", lambda: None)
     monkeypatch.setattr("aifn.cli.find_similar", lambda registry, name: [])
-    monkeypatch.setattr("aifn.cli.get_provider", lambda name=None, model=None: provider)
+    monkeypatch.setattr(
+        "aifn.cli.get_provider",
+        lambda name=None, model=None, fast_model=None: provider,
+    )
     monkeypatch.setattr("aifn.cli.Registry.load", lambda: registry)
     monkeypatch.setattr(
         "aifn.cli.write_generated_function",
@@ -217,6 +223,79 @@ def test_call_rejects_unknown_saved_provider(monkeypatch, tmp_path):
 
     assert result.exit_code != 0
     assert "Unsupported provider" in result.output
+
+
+def test_config_without_subcommand_shows_saved_values(monkeypatch, tmp_path):
+    registry = Registry(path=tmp_path / "registry.json")
+    registry.provider_name = "openai"
+    registry.main_model = "gpt-main"
+    registry.fast_model = "gpt-fast"
+
+    monkeypatch.setattr("aifn.cli.init_store", lambda **kwargs: None)
+    monkeypatch.setattr("aifn.cli.Registry.load", lambda: registry)
+
+    result = runner.invoke(app, ["config"])
+
+    assert result.exit_code == 0
+    assert "openai" in result.output
+    assert "gpt-main" in result.output
+    assert "gpt-fast" in result.output
+
+
+def test_config_set_models_persists_project_models(monkeypatch, tmp_path):
+    registry = Registry(path=tmp_path / "registry.json")
+
+    saved_calls = []
+
+    def fake_init_store(provider_name=None, main_model=None, fast_model=None):
+        saved_calls.append((provider_name, main_model, fast_model))
+        if main_model is not None:
+            registry.main_model = main_model
+        if fast_model is not None:
+            registry.fast_model = fast_model
+
+    monkeypatch.setattr("aifn.cli.init_store", fake_init_store)
+    monkeypatch.setattr("aifn.cli.Registry.load", lambda: registry)
+
+    result = runner.invoke(
+        app, ["config", "set-models", "--main", "gpt-main", "--fast", "gpt-fast"]
+    )
+
+    assert result.exit_code == 0
+    assert saved_calls == [(None, "gpt-main", "gpt-fast")]
+    assert registry.main_model == "gpt-main"
+    assert registry.fast_model == "gpt-fast"
+
+
+def test_doctor_reports_openai_setup(monkeypatch, tmp_path):
+    registry = Registry(path=tmp_path / "registry.json")
+    registry.provider_name = "openai"
+    registry.main_model = "gpt-main"
+    registry.fast_model = "gpt-fast"
+    registry.add(
+        FunctionRecord(
+            canonical_name="slugify",
+            entrypoint=f"{tmp_path / 'slugify.py'}:slugify",
+        )
+    )
+    (tmp_path / "slugify.py").write_text(
+        "def slugify(*args):\n    return ''\n", encoding="utf-8"
+    )
+
+    monkeypatch.setattr("aifn.cli.init_store", lambda **kwargs: None)
+    monkeypatch.setattr("aifn.cli.Registry.load", lambda: registry)
+    monkeypatch.setattr("aifn.cli.importlib.util.find_spec", lambda name: object())
+    monkeypatch.setattr(
+        "aifn.cli.os.getenv",
+        lambda name: "test-key" if name == "OPENAI_API_KEY" else None,
+    )
+    monkeypatch.setattr("aifn.cli.aifn_dir", lambda: tmp_path)
+
+    result = runner.invoke(app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "OPENAI_API_KEY" in result.output
+    assert "Installed" in result.output
 
 
 def test_resolve_call_args_uses_piped_stdin_when_no_args_are_provided(monkeypatch):

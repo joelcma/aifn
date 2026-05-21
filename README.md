@@ -59,3 +59,7 @@ aifn call summarize_text "Some long text" --desc "Return a short summary"
 `aifn init` now prompts for the project provider once and stores it in `.aifn/registry.json`, so normal `aifn call ...` usage reuses that provider without needing `--provider` each time. You can still pass `--provider` on a single call to override the saved default.
 
 With the OpenAI provider, `AIFN_FAST_MODEL` is used to classify ambiguous requests such as whether a missing name should become an alias for an existing capability, and `AIFN_MAIN_MODEL` is used only when new code needs to be generated.
+
+Use `aifn config` to inspect the saved project provider and model settings, `aifn config set-provider ...` to change the provider, and `aifn config set-models --main ... --fast ...` to persist project-specific model overrides.
+
+Use `aifn doctor` to check the saved provider, effective model settings, OpenAI dependency and API key availability, and whether registered function entrypoints exist on disk.

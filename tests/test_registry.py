@@ -18,9 +18,13 @@ def test_registry_alias_lookup(tmp_path):
 def test_registry_persists_provider_name(tmp_path):
     registry = Registry(path=tmp_path / "registry.json")
     registry.provider_name = "openai"
+    registry.main_model = "gpt-main"
+    registry.fast_model = "gpt-fast"
 
     registry.save()
 
     loaded = Registry(path=tmp_path / "registry.json").load()
 
     assert loaded.provider_name == "openai"
+    assert loaded.main_model == "gpt-main"
+    assert loaded.fast_model == "gpt-fast"

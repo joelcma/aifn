@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.util
+import os
 import sys
 from typing import Optional
 
@@ -30,6 +32,10 @@ class AIFNGroup(TyperGroup):
 
 
 app = typer.Typer(cls=AIFNGroup, help="AI-assisted local function registry CLI")
+config_app = typer.Typer(
+    invoke_without_command=True, help="Show or update project configuration"
+)
+app.add_typer(config_app, name="config")
 console = Console()
 
 
@@ -59,6 +65,87 @@ def prompt_for_provider(default: str) -> str:
             console.print(str(exc), style="red")
 
 
+def resolve_model_settings(
+    registry: Registry,
+    model: str | None = None,
+    fast_model: str | None = None,
+) -> tuple[str | None, str | None]:
+    selected_main_model = model or registry.main_model or os.getenv("AIFN_MAIN_MODEL")
+    selected_fast_model = (
+        fast_model or registry.fast_model or os.getenv("AIFN_FAST_MODEL")
+    )
+    return selected_main_model, selected_fast_model
+
+
+def print_config(registry: Registry) -> None:
+    table = Table(title="Project configuration")
+    table.add_column("Setting")
+    table.add_column("Value")
+    table.add_row("provider", registry.provider_name)
+    table.add_row("main_model", registry.main_model or "<env/default>")
+    table.add_row("fast_model", registry.fast_model or "<env/default>")
+    console.print(table)
+
+
+def doctor_report_line(status: str, name: str, detail: str) -> None:
+    style = {
+        "ok": "green",
+        "warn": "yellow",
+        "error": "red",
+    }[status]
+    console.print(f"[{style}]{status.upper()}[/{style}] {name}: {detail}")
+
+
+def check_provider_config(registry: Registry) -> tuple[str, int]:
+    try:
+        provider_name = normalize_provider_name(registry.provider_name)
+        doctor_report_line("ok", "provider", provider_name)
+        return provider_name, 0
+    except typer.BadParameter as exc:
+        doctor_report_line("error", "provider", str(exc))
+        return registry.provider_name, 1
+
+
+def check_openai_environment() -> tuple[int, int]:
+    errors = 0
+    warnings = 0
+
+    if importlib.util.find_spec("openai") is None:
+        errors += 1
+        doctor_report_line(
+            "error", "openai package", "Install with: pip install -e '.[openai]'"
+        )
+    else:
+        doctor_report_line("ok", "openai package", "Installed")
+
+    if os.getenv("OPENAI_API_KEY"):
+        doctor_report_line("ok", "OPENAI_API_KEY", "Present in environment")
+    else:
+        warnings += 1
+        doctor_report_line("warn", "OPENAI_API_KEY", "Missing from environment")
+
+    return errors, warnings
+
+
+def check_entrypoints(registry: Registry) -> int:
+    missing_entrypoints = []
+    for record in registry.records.values():
+        path_text, _, _ = record.entrypoint.partition(":")
+        if path_text and not os.path.exists(path_text):
+            missing_entrypoints.append(record.canonical_name)
+
+    if missing_entrypoints:
+        doctor_report_line(
+            "warn",
+            "entrypoints",
+            f"Missing files for: {', '.join(sorted(missing_entrypoints))}",
+        )
+        return 1
+
+    doctor_report_line("ok", "entrypoints", "All registered function files exist")
+    return 0
+
+
 def resolve_call_args(args: list[str] | None) -> list[str]:
     resolved_args = list(args or [])
     if resolved_args or sys.stdin.isatty():
@@ -82,6 +169,65 @@ def init() -> None:
     console.print(f"Default provider: [bold]{provider_name}[/bold]")
 
 
+@config_app.callback()
+def config_callback(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is None:
+        init_store()
+        print_config(Registry.load())
+
+
+@config_app.command("set-provider")
+def config_set_provider(
+    provider_name: str = typer.Argument(..., help="Project provider name"),
+) -> None:
+    normalized_provider = normalize_provider_name(provider_name)
+    init_store(provider_name=normalized_provider)
+    console.print(f"Saved provider: [bold]{normalized_provider}[/bold]")
+
+
+@config_app.command("set-models")
+def config_set_models(
+    main_model: Optional[str] = typer.Option(None, "--main", help="Project main model"),
+    fast_model: Optional[str] = typer.Option(None, "--fast", help="Project fast model"),
+) -> None:
+    if main_model is None and fast_model is None:
+        raise typer.BadParameter("Provide --main, --fast, or both.")
+
+    init_store(main_model=main_model, fast_model=fast_model)
+    registry = Registry.load()
+    print_config(registry)
+
+
+@app.command()
+def doctor() -> None:
+    """Check project configuration and local environment."""
+    errors = 0
+    warnings = 0
+    init_store()
+    registry = Registry.load()
+
+    doctor_report_line("ok", ".aifn", f"Initialized at {aifn_dir()}")
+
+    provider_name, provider_errors = check_provider_config(registry)
+    errors += provider_errors
+
+    main_model, fast_model = resolve_model_settings(registry)
+    doctor_report_line("ok", "main_model", main_model or "<provider default>")
+    doctor_report_line("ok", "fast_model", fast_model or "<provider default>")
+
+    if provider_name == "openai":
+        openai_errors, openai_warnings = check_openai_environment()
+        errors += openai_errors
+        warnings += openai_warnings
+
+    warnings += check_entrypoints(registry)
+
+    if errors:
+        raise typer.Exit(code=1)
+    if warnings:
+        raise typer.Exit(code=0)
+
+
 @app.command()
 def call(
     name: str = typer.Argument(..., help="Function name or alias"),
@@ -99,6 +245,11 @@ def call(
         "--model",
         help="Override the provider model for this call",
     ),
+    fast_model: Optional[str] = typer.Option(
+        None,
+        "--fast-model",
+        help="Override the fast delegation model for this call",
+    ),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Accept scaffold without prompt"
     ),
@@ -115,7 +266,16 @@ def call(
         return
 
     selected_provider = normalize_provider_name(provider_name or registry.provider_name)
-    provider = get_provider(name=selected_provider, model=model)
+    selected_main_model, selected_fast_model = resolve_model_settings(
+        registry,
+        model=model,
+        fast_model=fast_model,
+    )
+    provider = get_provider(
+        name=selected_provider,
+        model=selected_main_model,
+        fast_model=selected_fast_model,
+    )
     similar = find_similar(registry, name)
     similar_capabilities = [candidate.to_dict() for _, candidate in similar[:5]]
     decision = provider.resolve_missing_function(

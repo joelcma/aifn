@@ -39,6 +39,8 @@ class Registry:
         self.path = path or registry_path()
         self.records: dict[str, FunctionRecord] = {}
         self.provider_name = "placeholder"
+        self.main_model: str | None = None
+        self.fast_model: str | None = None
 
     @classmethod
     def load(cls) -> "Registry":
@@ -48,6 +50,8 @@ class Registry:
 
         raw = json.loads(registry.path.read_text(encoding="utf-8"))
         registry.provider_name = raw.get("provider", "placeholder")
+        registry.main_model = raw.get("main_model")
+        registry.fast_model = raw.get("fast_model")
         for name, data in raw.get("functions", {}).items():
             registry.records[name] = FunctionRecord.from_dict(data)
         return registry
@@ -57,6 +61,8 @@ class Registry:
         data = {
             "version": 1,
             "provider": self.provider_name,
+            "main_model": self.main_model,
+            "fast_model": self.fast_model,
             "functions": {
                 name: record.to_dict() for name, record in sorted(self.records.items())
             },
@@ -82,10 +88,18 @@ class Registry:
         return record
 
 
-def init_store(provider_name: str | None = None) -> None:
+def init_store(
+    provider_name: str | None = None,
+    main_model: str | None = None,
+    fast_model: str | None = None,
+) -> None:
     functions_dir().mkdir(parents=True, exist_ok=True)
     tests_dir().mkdir(parents=True, exist_ok=True)
     registry = Registry.load()
     if provider_name is not None:
         registry.provider_name = provider_name
+    if main_model is not None:
+        registry.main_model = main_model
+    if fast_model is not None:
+        registry.fast_model = fast_model
     registry.save()
