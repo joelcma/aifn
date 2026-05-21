@@ -272,15 +272,20 @@ def test_doctor_reports_openai_setup(monkeypatch, tmp_path):
     registry.provider_name = "openai"
     registry.main_model = "gpt-main"
     registry.fast_model = "gpt-fast"
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    aifn_state_dir = project_dir / ".aifn"
+    aifn_state_dir.mkdir()
+    functions_dir = aifn_state_dir / "functions"
+    functions_dir.mkdir()
+    slugify_file = functions_dir / "slugify.py"
     registry.add(
         FunctionRecord(
             canonical_name="slugify",
-            entrypoint=f"{tmp_path / 'slugify.py'}:slugify",
+            entrypoint=".aifn/functions/slugify.py:slugify",
         )
     )
-    (tmp_path / "slugify.py").write_text(
-        "def slugify(*args):\n    return ''\n", encoding="utf-8"
-    )
+    slugify_file.write_text("def slugify(*args):\n    return ''\n", encoding="utf-8")
 
     monkeypatch.setattr("aifn.cli.init_store", lambda **kwargs: None)
     monkeypatch.setattr("aifn.cli.Registry.load", lambda: registry)
@@ -289,7 +294,11 @@ def test_doctor_reports_openai_setup(monkeypatch, tmp_path):
         "aifn.cli.os.getenv",
         lambda name: "test-key" if name == "OPENAI_API_KEY" else None,
     )
-    monkeypatch.setattr("aifn.cli.aifn_dir", lambda: tmp_path)
+    monkeypatch.setattr("aifn.cli.aifn_dir", lambda: aifn_state_dir)
+    monkeypatch.setattr("aifn.runner.project_root", lambda: project_dir)
+    monkeypatch.setattr(
+        "aifn.cli.resolve_entrypoint_path", lambda entrypoint: (slugify_file, "slugify")
+    )
 
     result = runner.invoke(app, ["doctor"])
 

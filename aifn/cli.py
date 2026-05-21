@@ -14,7 +14,7 @@ from typer.core import TyperGroup
 from .paths import aifn_dir
 from .provider import ResolutionDecision, get_provider
 from .registry import Registry, init_store
-from .runner import run_entrypoint
+from .runner import resolve_entrypoint_path, run_entrypoint
 from .scaffold import write_generated_function
 from .similarity import find_similar
 
@@ -130,8 +130,8 @@ def check_openai_environment() -> tuple[int, int]:
 def check_entrypoints(registry: Registry) -> int:
     missing_entrypoints = []
     for record in registry.records.values():
-        path_text, _, _ = record.entrypoint.partition(":")
-        if path_text and not os.path.exists(path_text):
+        path, _ = resolve_entrypoint_path(record.entrypoint)
+        if not path.exists():
             missing_entrypoints.append(record.canonical_name)
 
     if missing_entrypoints:

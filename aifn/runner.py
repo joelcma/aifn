@@ -4,11 +4,20 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
+from .paths import project_root
+
+
+def resolve_entrypoint_path(entrypoint: str) -> tuple[Path, str]:
+    path_text, function_name = entrypoint.split(":", maxsplit=1)
+    path = Path(path_text)
+    if not path.is_absolute():
+        path = project_root() / path
+    return path, function_name
+
 
 def load_callable(entrypoint: str) -> Any:
     """Load `path/to/file.py:function_name`."""
-    path_text, function_name = entrypoint.split(":", maxsplit=1)
-    path = Path(path_text)
+    path, function_name = resolve_entrypoint_path(entrypoint)
 
     if not path.exists():
         raise FileNotFoundError(f"Function file not found: {path}")
