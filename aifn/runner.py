@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 from pathlib import Path
 from typing import Any
 
 from .paths import project_root
+
+
+class InvocationArgumentError(TypeError):
+    pass
 
 
 def resolve_entrypoint_path(entrypoint: str) -> tuple[Path, str]:
@@ -38,6 +43,19 @@ def load_callable(entrypoint: str) -> Any:
     return fn
 
 
+def validate_callable_args(fn: Any, args: list[str]) -> None:
+    try:
+        signature = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return
+
+    try:
+        signature.bind(*args)
+    except TypeError as exc:
+        raise InvocationArgumentError(str(exc)) from exc
+
+
 def run_entrypoint(entrypoint: str, args: list[str]) -> Any:
     fn = load_callable(entrypoint)
+    validate_callable_args(fn, args)
     return fn(*args)

@@ -46,3 +46,17 @@ def test_get_provider_reads_fast_and_main_model_env(monkeypatch):
 def test_get_provider_rejects_unknown_provider():
     with pytest.raises(ValueError, match="Unknown provider"):
         get_provider(name="anthropic")
+
+
+def test_placeholder_provider_rejects_editing_existing_functions():
+    provider = PlaceholderProvider()
+
+    with pytest.raises(
+        RuntimeError, match="Editing existing functions requires an AI provider"
+    ):
+        provider.edit_function(
+            name="slugify",
+            args=[],
+            current_code="def slugify(*args):\n    return ''\n",
+            current_tests="",
+        )

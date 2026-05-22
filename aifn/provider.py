@@ -42,6 +42,16 @@ class FunctionProvider(Protocol):
         existing_capabilities: list[dict[str, Any]] | None = None,
     ) -> GeneratedFunction: ...
 
+    def edit_function(
+        self,
+        name: str,
+        args: list[str],
+        current_code: str,
+        current_tests: str,
+        description: str | None = None,
+        existing_capabilities: list[dict[str, Any]] | None = None,
+    ) -> GeneratedFunction: ...
+
 
 class PlaceholderProvider:
     def resolve_missing_function(
@@ -102,6 +112,20 @@ def test_{function_name}_placeholder():
             description=desc,
             signature=f"{function_name}(*args: str) -> str",
             tags=[],
+        )
+
+    def edit_function(
+        self,
+        name: str,
+        args: list[str],
+        current_code: str,
+        current_tests: str,
+        description: str | None = None,
+        existing_capabilities: list[dict[str, Any]] | None = None,
+    ) -> GeneratedFunction:
+        del name, args, current_code, current_tests, description, existing_capabilities
+        raise RuntimeError(
+            "Editing existing functions requires an AI provider. Configure `openai` first."
         )
 
 
@@ -210,6 +234,45 @@ class OpenAIProvider:
             tags=list(payload.get("tags", [])),
         )
 
+    def edit_function(
+        self,
+        name: str,
+        args: list[str],
+        current_code: str,
+        current_tests: str,
+        description: str | None = None,
+        existing_capabilities: list[dict[str, Any]] | None = None,
+    ) -> GeneratedFunction:
+        requested_name = safe_python_identifier(name)
+        prompt = build_edit_prompt(
+            requested_name=requested_name,
+            args=args,
+            current_code=current_code,
+            current_tests=current_tests,
+            description=description,
+            existing_capabilities=existing_capabilities or [],
+        )
+
+        payload = self._json_response(model=self.main_model, prompt=prompt)
+        canonical_name = safe_python_identifier(payload["canonical_name"])
+        if canonical_name != requested_name:
+            raise ValueError(
+                f"Edited function must keep canonical name {requested_name!r}, got {canonical_name!r}"
+            )
+
+        code = payload["code"]
+        tests = payload["tests"]
+        validate_generated_code(canonical_name, code)
+
+        return GeneratedFunction(
+            canonical_name=canonical_name,
+            code=code.rstrip() + "\n",
+            tests=tests.rstrip() + "\n",
+            description=payload.get("description", description or ""),
+            signature=payload.get("signature", f"{canonical_name}(*args: str)"),
+            tags=list(payload.get("tags", [])),
+        )
+
     def _json_response(self, model: str, prompt: str) -> dict[str, Any]:
         response = self.client.responses.create(
             model=model,
@@ -292,6 +355,50 @@ Requested function name: {requested_name}
 CLI args from current call: {json.dumps(args)}
 Optional user description: {description or ""}
 Similar capabilities: {json.dumps(similar_capabilities, indent=2)}
+""".strip()
+
+
+def build_edit_prompt(
+    requested_name: str,
+    args: list[str],
+    current_code: str,
+    current_tests: str,
+    description: str | None,
+    existing_capabilities: list[dict[str, Any]],
+) -> str:
+    return f"""
+You are updating an existing Python function for a local CLI tool called aifn.
+
+Return ONLY a valid JSON object with exactly these keys:
+- canonical_name: snake_case Python function name
+- description: short human-readable description
+- signature: Python-like signature string
+- tags: array of short strings
+- code: complete Python source code defining the canonical function
+- tests: complete pytest source code for the function
+
+Rules:
+- Keep the canonical function name exactly {requested_name}.
+- Generate small, boring, deterministic Python.
+- Prefer pure functions: no filesystem, network, subprocess, eval, exec, environment variables, secrets, or shell calls.
+- Use only the Python standard library unless the requested task clearly requires otherwise.
+- Function arguments are received from the CLI as strings, so parse them inside the function when needed.
+- Generated functions must work naturally with shell pipelines: when called with one string argument, treat it as the primary input value.
+- Update the existing code and tests instead of replacing them with an unrelated implementation.
+- Tests must load the function from `.aifn/functions/<canonical_name>.py` using importlib.util and pathlib.
+- Do not include markdown fences.
+- Do not include explanations outside JSON.
+
+Requested function name: {requested_name}
+CLI args from current call: {json.dumps(args)}
+Requested change: {description or ''}
+Existing capabilities: {json.dumps(existing_capabilities, indent=2)}
+
+Current code:
+{current_code}
+
+Current tests:
+{current_tests}
 """.strip()
 
 

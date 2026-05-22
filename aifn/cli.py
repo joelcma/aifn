@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import importlib.util
 import os
 import sys
@@ -11,11 +12,15 @@ from rich.console import Console
 from rich.table import Table
 from typer.core import TyperGroup
 
-from .paths import aifn_dir
+from .paths import aifn_dir, tests_dir
 from .provider import ResolutionDecision, get_provider
 from .registry import Registry, init_store
-from .runner import resolve_entrypoint_path, run_entrypoint
-from .scaffold import write_generated_function
+from .runner import InvocationArgumentError, resolve_entrypoint_path, run_entrypoint
+from .scaffold import (
+    remove_generated_function,
+    update_generated_function,
+    write_generated_function,
+)
 from .similarity import find_similar
 
 
@@ -40,6 +45,7 @@ console = Console()
 
 
 SUPPORTED_PROVIDERS = {"placeholder", "openai"}
+FUNCTION_NAME_HELP = "Function name or alias"
 
 
 def normalize_provider_name(value: str) -> str:
@@ -158,6 +164,48 @@ def resolve_call_args(args: list[str] | None) -> list[str]:
     return [piped_input.rstrip("\n")]
 
 
+def print_unified_diff(title: str, before: str, after: str) -> bool:
+    diff_lines = list(
+        difflib.unified_diff(
+            before.splitlines(),
+            after.splitlines(),
+            fromfile=f"before/{title}",
+            tofile=f"after/{title}",
+            lineterm="",
+        )
+    )
+    if not diff_lines:
+        return False
+
+    console.print(f"[bold]{title}[/bold]")
+    console.print("\n".join(diff_lines), markup=False)
+    return True
+
+
+def print_invocation_argument_error(name: str, exc: InvocationArgumentError) -> None:
+    console.print(
+        f"Function [bold]{name}[/bold] needs different arguments before it can run: {exc}"
+    )
+
+
+def run_record(
+    record: FunctionRecord, args: list[str], *, created: bool = False
+) -> bool:
+    try:
+        result = run_entrypoint(record.entrypoint, args)
+    except InvocationArgumentError as exc:
+        print_invocation_argument_error(record.canonical_name, exc)
+        if created:
+            console.print(
+                f"The function was created successfully. Re-run [bold]aifn {record.canonical_name} ...[/bold] with the required input."
+            )
+            return False
+        raise typer.Exit(code=1) from exc
+
+    console.print(result)
+    return True
+
+
 @app.command()
 def init() -> None:
     """Initialize .aifn in the current project."""
@@ -229,8 +277,100 @@ def doctor() -> None:
 
 
 @app.command()
+def edit(
+    name: str = typer.Argument(..., help=FUNCTION_NAME_HELP),
+    args: list[str] = typer.Argument(
+        None, help="Arguments passed to the edited function"
+    ),
+    desc: Optional[str] = typer.Option(
+        None,
+        "--desc",
+        help="Describe the change you want made to the existing function",
+    ),
+    provider_name: Optional[str] = typer.Option(
+        None,
+        "--provider",
+        help="Generation provider to use, for example placeholder or openai",
+    ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        help="Override the provider model for this edit",
+    ),
+    fast_model: Optional[str] = typer.Option(
+        None,
+        "--fast-model",
+        help="Override the fast delegation model for this edit",
+    ),
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Apply the proposed edit without an interactive confirmation",
+    ),
+) -> None:
+    """Preview and optionally apply an AI-generated edit to an existing function."""
+    init_store()
+    registry = Registry.load()
+    args = resolve_call_args(args)
+
+    record = registry.find(name)
+    if not record:
+        console.print(f"No function found for {name!r}")
+        raise typer.Exit(code=1)
+
+    selected_provider = normalize_provider_name(provider_name or registry.provider_name)
+    selected_main_model, selected_fast_model = resolve_model_settings(
+        registry,
+        model=model,
+        fast_model=fast_model,
+    )
+    provider = get_provider(
+        name=selected_provider,
+        model=selected_main_model,
+        fast_model=selected_fast_model,
+    )
+
+    function_file, _ = resolve_entrypoint_path(record.entrypoint)
+    test_file = tests_dir() / f"test_{record.canonical_name}.py"
+    current_code = function_file.read_text(encoding="utf-8")
+    current_tests = test_file.read_text(encoding="utf-8") if test_file.exists() else ""
+
+    generated = provider.edit_function(
+        name=record.canonical_name,
+        args=args,
+        current_code=current_code,
+        current_tests=current_tests,
+        description=desc,
+        existing_capabilities=[item.to_dict() for item in registry.records.values()],
+    )
+
+    changed = False
+    changed |= print_unified_diff(
+        f"{record.canonical_name}.py", current_code, generated.code
+    )
+    changed |= print_unified_diff(
+        f"test_{record.canonical_name}.py",
+        current_tests,
+        generated.tests,
+    )
+
+    if not changed:
+        console.print("No changes proposed.")
+        return
+
+    if not apply and not typer.confirm("Apply these changes?"):
+        console.print("Preview only. No files were changed.")
+        return
+
+    updated_record = update_generated_function(record, generated, registry)
+    console.print(
+        f"Updated [bold]{updated_record.canonical_name}[/bold] to version {updated_record.version}"
+    )
+
+
+@app.command()
 def call(
-    name: str = typer.Argument(..., help="Function name or alias"),
+    name: str = typer.Argument(..., help=FUNCTION_NAME_HELP),
     args: list[str] = typer.Argument(None, help="Arguments passed to the function"),
     desc: Optional[str] = typer.Option(
         None, "--desc", help="Description for missing functions"
@@ -261,8 +401,7 @@ def call(
 
     record = registry.find(name)
     if record:
-        result = run_entrypoint(record.entrypoint, args)
-        console.print(result)
+        run_record(record, args)
         return
 
     selected_provider = normalize_provider_name(provider_name or registry.provider_name)
@@ -308,14 +447,13 @@ def call(
             console.print(
                 f"Added alias [bold]{name}[/bold] -> [bold]{aliased_record.canonical_name}[/bold]"
             )
-            result = run_entrypoint(aliased_record.entrypoint, args)
-            console.print(result)
+            run_record(aliased_record, args)
             return
 
         console.print(
-            "Use `aifn alias NEW_NAME EXISTING_NAME` to alias it, or call again with --yes to scaffold anyway."
+            "Use `aifn alias NEW_NAME EXISTING_NAME` to alias it, or generate a new function anyway."
         )
-        if decision.review_required and not yes:
+        if not yes and not typer.confirm("Generate a new function instead?"):
             raise typer.Exit(code=1)
 
     generated = provider.generate_function(
@@ -337,8 +475,7 @@ def call(
     console.print(
         f"Created [bold]{record.canonical_name}[/bold] at {record.entrypoint}"
     )
-    result = run_entrypoint(record.entrypoint, args)
-    console.print(result)
+    run_record(record, args, created=True)
 
 
 @app.command("list")
@@ -371,6 +508,33 @@ def inspect(name: str) -> None:
         raise typer.Exit(code=1)
 
     console.print_json(data=record.to_dict())
+
+
+@app.command()
+def remove(
+    name: str = typer.Argument(..., help=FUNCTION_NAME_HELP),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Delete without interactive confirmation",
+    ),
+) -> None:
+    """Remove a registered function and its generated files."""
+    registry = Registry.load()
+    record = registry.find(name)
+    if not record:
+        console.print(f"No function found for {name!r}")
+        raise typer.Exit(code=1)
+
+    if not yes and not typer.confirm(
+        f"Remove function {record.canonical_name!r} and its generated files?"
+    ):
+        console.print("No files were removed.")
+        raise typer.Exit(code=1)
+
+    remove_generated_function(record, registry)
+    console.print(f"Removed [bold]{record.canonical_name}[/bold]")
 
 
 @app.command()
