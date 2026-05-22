@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from aifn.provider import OpenAIProvider, PlaceholderProvider, get_provider
+from aifn.provider import PlaceholderProvider, OpenAIProvider, get_provider
 
 
 def test_get_provider_returns_placeholder_by_default(monkeypatch):
@@ -60,3 +60,13 @@ def test_placeholder_provider_rejects_editing_existing_functions():
             current_code="def slugify(*args):\n    return ''\n",
             current_tests="",
         )
+
+
+def test_placeholder_provider_can_generate_bash():
+    provider = PlaceholderProvider()
+
+    generated = provider.generate_function("slugify", [], language="bash")
+
+    assert generated.language == "bash"
+    assert generated.code.startswith("#!/usr/bin/env bash")
+    assert ".aifn/functions/slugify.sh:slugify" in generated.tests

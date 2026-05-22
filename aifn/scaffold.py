@@ -11,7 +11,8 @@ from .runner import resolve_entrypoint_path
 def write_generated_function(
     generated: GeneratedFunction, registry: Registry
 ) -> FunctionRecord:
-    function_file = functions_dir() / f"{generated.canonical_name}.py"
+    extension = ".sh" if generated.language == "bash" else ".py"
+    function_file = functions_dir() / f"{generated.canonical_name}{extension}"
     test_file = tests_dir() / f"test_{generated.canonical_name}.py"
 
     if function_file.exists():
@@ -29,6 +30,7 @@ def write_generated_function(
         aliases=[],
         tags=generated.tags,
         version=1,
+        language=generated.language,
     )
     registry.add(record)
     registry.save()
@@ -52,6 +54,7 @@ def update_generated_function(
     record.description = generated.description
     record.signature = generated.signature
     record.tags = generated.tags
+    record.language = generated.language
     record.version += 1
     registry.save()
     return record
@@ -72,7 +75,7 @@ def rename_generated_function(
 ) -> FunctionRecord:
     function_file, function_name = resolve_entrypoint_path(record.entrypoint)
     old_name = record.canonical_name
-    renamed_function_file = function_file.with_name(f"{new_name}.py")
+    renamed_function_file = function_file.with_name(f"{new_name}{function_file.suffix}")
     old_test_file = tests_dir() / f"test_{old_name}.py"
     renamed_test_file = tests_dir() / f"test_{new_name}.py"
 

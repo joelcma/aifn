@@ -46,6 +46,7 @@ console = Console()
 
 
 SUPPORTED_PROVIDERS = {"placeholder", "openai"}
+SUPPORTED_LANGUAGES = {"python", "bash"}
 FUNCTION_NAME_HELP = "Function name or alias"
 
 
@@ -57,6 +58,16 @@ def normalize_provider_name(value: str) -> str:
             f"Unsupported provider {value!r}. Choose one of: {supported}"
         )
     return provider_name
+
+
+def normalize_language_name(value: str) -> str:
+    language = value.strip().lower()
+    if language not in SUPPORTED_LANGUAGES:
+        supported = ", ".join(sorted(SUPPORTED_LANGUAGES))
+        raise typer.BadParameter(
+            f"Unsupported language {value!r}. Choose one of: {supported}"
+        )
+    return language
 
 
 def prompt_for_provider(default: str) -> str:
@@ -343,6 +354,7 @@ def edit(
         current_tests=current_tests,
         description=desc,
         existing_capabilities=[item.to_dict() for item in registry.records.values()],
+        language=record.language,
     )
 
     changed = False
@@ -391,6 +403,11 @@ def call(
         "--fast-model",
         help="Override the fast delegation model for this call",
     ),
+    language: str = typer.Option(
+        "python",
+        "--language",
+        help="Language to generate for new functions: python or bash",
+    ),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Accept scaffold without prompt"
     ),
@@ -404,6 +421,8 @@ def call(
     if record:
         run_record(record, args)
         return
+
+    selected_language = normalize_language_name(language)
 
     selected_provider = normalize_provider_name(provider_name or registry.provider_name)
     selected_main_model, selected_fast_model = resolve_model_settings(
@@ -464,6 +483,7 @@ def call(
         existing_capabilities=[
             record.to_dict() for record in registry.records.values()
         ],
+        language=selected_language,
     )
 
     console.print(f"Function [bold]{generated.canonical_name}[/bold] does not exist.")

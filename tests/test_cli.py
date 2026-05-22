@@ -94,6 +94,7 @@ def test_call_uses_selected_provider_and_registry_context(monkeypatch, tmp_path)
             "args": ["hello world"],
             "description": "Summarize the input text",
             "existing_capabilities": [registry.records["slugify"].to_dict()],
+            "language": "python",
         }
     ]
 
@@ -148,6 +149,7 @@ def test_unknown_top_level_command_dispatches_to_call(monkeypatch, tmp_path):
             "args": ["Hello World"],
             "description": None,
             "existing_capabilities": [],
+            "language": "python",
         }
     ]
 
@@ -250,6 +252,64 @@ def test_call_can_generate_new_function_despite_similar_match(monkeypatch, tmp_p
             "args": [],
             "description": None,
             "existing_capabilities": [registry.records["closest_city"].to_dict()],
+            "language": "python",
+        }
+    ]
+
+
+def test_call_can_generate_bash_function(monkeypatch, tmp_path):
+    class FakeProvider:
+        def __init__(self):
+            self.calls = []
+
+        def resolve_missing_function(self, **kwargs):
+            return ResolutionDecision(action="generate")
+
+        def generate_function(self, **kwargs):
+            self.calls.append(kwargs)
+            return GeneratedFunction(
+                canonical_name="slugify",
+                code="#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$1\"\n",
+                tests="def test_placeholder():\n    assert True\n",
+                description="summary",
+                signature='slugify "$@"',
+                tags=["text"],
+                language="bash",
+            )
+
+    provider = FakeProvider()
+    registry = Registry(path=tmp_path / "registry.json")
+    registry.provider_name = "openai"
+
+    monkeypatch.setattr("aifn.cli.init_store", lambda: None)
+    monkeypatch.setattr("aifn.cli.find_similar", lambda registry, name: [])
+    monkeypatch.setattr(
+        "aifn.cli.get_provider",
+        lambda name=None, model=None, fast_model=None: provider,
+    )
+    monkeypatch.setattr("aifn.cli.Registry.load", lambda: registry)
+    monkeypatch.setattr(
+        "aifn.cli.write_generated_function",
+        lambda generated, registry: SimpleNamespace(
+            canonical_name=generated.canonical_name,
+            entrypoint=(
+                f"{tmp_path / (generated.canonical_name + '.sh')}:{generated.canonical_name}"
+            ),
+            language=generated.language,
+        ),
+    )
+    monkeypatch.setattr("aifn.cli.run_entrypoint", lambda entrypoint, args: "ok")
+
+    result = runner.invoke(app, ["call", "slugify", "--language", "bash", "--yes"])
+
+    assert result.exit_code == 0
+    assert provider.calls == [
+        {
+            "name": "slugify",
+            "args": [],
+            "description": None,
+            "existing_capabilities": [],
+            "language": "bash",
         }
     ]
 
@@ -745,3 +805,16 @@ def test_resolve_call_args_prefers_explicit_args_over_piped_stdin(monkeypatch):
     monkeypatch.setattr("aifn.cli.sys.stdin", FakeStdin("Ignored Input\n"))
 
     assert resolve_call_args(["Hello World"]) == ["Hello World"]
+
+
+def test_call_rejects_unknown_language(monkeypatch, tmp_path):
+    registry = Registry(path=tmp_path / "registry.json")
+    registry.provider_name = "openai"
+
+    monkeypatch.setattr("aifn.cli.init_store", lambda: None)
+    monkeypatch.setattr("aifn.cli.Registry.load", lambda: registry)
+
+    result = runner.invoke(app, ["call", "slugify", "--language", "ruby", "--yes"])
+
+    assert result.exit_code != 0
+    assert "Unsupported language" in result.output

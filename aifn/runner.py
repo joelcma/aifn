@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,23 @@ def validate_callable_args(fn: Any, args: list[str]) -> None:
 
 
 def run_entrypoint(entrypoint: str, args: list[str]) -> Any:
+    path, _ = resolve_entrypoint_path(entrypoint)
+    if path.suffix == ".sh":
+        return run_shell_entrypoint(path, args)
+
     fn = load_callable(entrypoint)
     validate_callable_args(fn, args)
     return fn(*args)
+
+
+def run_shell_entrypoint(path: Path, args: list[str]) -> str:
+    result = subprocess.run(
+        ["bash", str(path), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or str(path)
+        raise RuntimeError(f"Shell entrypoint failed: {detail}")
+    return result.stdout.rstrip("\n")

@@ -17,6 +17,7 @@ class FunctionRecord:
     aliases: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     version: int = 1
+    language: str = "python"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "FunctionRecord":
@@ -31,6 +32,7 @@ class FunctionRecord:
             "aliases": self.aliases,
             "tags": self.tags,
             "version": self.version,
+            "language": self.language,
         }
 
 

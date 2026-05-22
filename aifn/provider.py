@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -14,6 +15,7 @@ class GeneratedFunction:
     description: str
     signature: str
     tags: list[str]
+    language: str = "python"
 
 
 @dataclass
@@ -40,6 +42,7 @@ class FunctionProvider(Protocol):
         args: list[str],
         description: str | None = None,
         existing_capabilities: list[dict[str, Any]] | None = None,
+        language: str = "python",
     ) -> GeneratedFunction: ...
 
     def edit_function(
@@ -50,6 +53,7 @@ class FunctionProvider(Protocol):
         current_tests: str,
         description: str | None = None,
         existing_capabilities: list[dict[str, Any]] | None = None,
+        language: str = "python",
     ) -> GeneratedFunction: ...
 
 
@@ -75,11 +79,29 @@ class PlaceholderProvider:
         _args: list[str],
         description: str | None = None,
         _existing_capabilities: list[dict[str, Any]] | None = None,
+        language: str = "python",
     ) -> GeneratedFunction:
         function_name = safe_python_identifier(name)
         desc = description or f"Generated placeholder function for {function_name}."
 
-        code = f'''from __future__ import annotations
+        if language == "bash":
+            code = f'''#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "{function_name}($*)"
+'''
+            tests = f'''from aifn.runner import run_entrypoint
+
+
+def test_{function_name}_placeholder():
+    assert (
+        run_entrypoint(".aifn/functions/{function_name}.sh:{function_name}", ["hello"])
+        == "{function_name}(hello)"
+    )
+'''
+            signature = f'{function_name} "$@"'
+        else:
+            code = f'''from __future__ import annotations
 
 
 def {function_name}(*args: str) -> str:
@@ -87,7 +109,7 @@ def {function_name}(*args: str) -> str:
     return "{function_name}(" + ", ".join(args) + ")"
 '''
 
-        tests = f"""from pathlib import Path
+            tests = f"""from pathlib import Path
 import importlib.util
 
 
@@ -104,14 +126,16 @@ def test_{function_name}_placeholder():
     fn = load_function()
     assert fn("hello") == "{function_name}(hello)"
 """
+            signature = f"{function_name}(*args: str) -> str"
 
         return GeneratedFunction(
             canonical_name=function_name,
             code=code,
             tests=tests,
             description=desc,
-            signature=f"{function_name}(*args: str) -> str",
+            signature=signature,
             tags=[],
+            language=language,
         )
 
     def edit_function(
@@ -122,8 +146,17 @@ def test_{function_name}_placeholder():
         current_tests: str,
         description: str | None = None,
         existing_capabilities: list[dict[str, Any]] | None = None,
+        language: str = "python",
     ) -> GeneratedFunction:
-        del name, args, current_code, current_tests, description, existing_capabilities
+        del (
+            name,
+            args,
+            current_code,
+            current_tests,
+            description,
+            existing_capabilities,
+            language,
+        )
         raise RuntimeError(
             "Editing existing functions requires an AI provider. Configure `openai` first."
         )
@@ -209,6 +242,7 @@ class OpenAIProvider:
         args: list[str],
         description: str | None = None,
         existing_capabilities: list[dict[str, Any]] | None = None,
+        language: str = "python",
     ) -> GeneratedFunction:
         requested_name = safe_python_identifier(name)
         prompt = build_generation_prompt(
@@ -216,6 +250,7 @@ class OpenAIProvider:
             args=args,
             description=description,
             existing_capabilities=existing_capabilities or [],
+            language=language,
         )
 
         payload = self._json_response(model=self.main_model, prompt=prompt)
@@ -223,7 +258,7 @@ class OpenAIProvider:
         code = payload["code"]
         tests = payload["tests"]
 
-        validate_generated_code(canonical_name, code)
+        validate_generated_code(canonical_name, code, language=language)
 
         return GeneratedFunction(
             canonical_name=canonical_name,
@@ -232,6 +267,7 @@ class OpenAIProvider:
             description=payload.get("description", description or ""),
             signature=payload.get("signature", f"{canonical_name}(*args: str)"),
             tags=list(payload.get("tags", [])),
+            language=language,
         )
 
     def edit_function(
@@ -242,6 +278,7 @@ class OpenAIProvider:
         current_tests: str,
         description: str | None = None,
         existing_capabilities: list[dict[str, Any]] | None = None,
+        language: str = "python",
     ) -> GeneratedFunction:
         requested_name = safe_python_identifier(name)
         prompt = build_edit_prompt(
@@ -251,6 +288,7 @@ class OpenAIProvider:
             current_tests=current_tests,
             description=description,
             existing_capabilities=existing_capabilities or [],
+            language=language,
         )
 
         payload = self._json_response(model=self.main_model, prompt=prompt)
@@ -262,7 +300,7 @@ class OpenAIProvider:
 
         code = payload["code"]
         tests = payload["tests"]
-        validate_generated_code(canonical_name, code)
+        validate_generated_code(canonical_name, code, language=language)
 
         return GeneratedFunction(
             canonical_name=canonical_name,
@@ -271,6 +309,7 @@ class OpenAIProvider:
             description=payload.get("description", description or ""),
             signature=payload.get("signature", f"{canonical_name}(*args: str)"),
             tags=list(payload.get("tags", [])),
+            language=language,
         )
 
     def _json_response(self, model: str, prompt: str) -> dict[str, Any]:
@@ -302,30 +341,29 @@ def build_generation_prompt(
     args: list[str],
     description: str | None,
     existing_capabilities: list[dict[str, Any]],
+    language: str,
 ) -> str:
+    rules = generation_rules_for(language)
+    test_hint = generated_test_hint_for(language, requested_name)
     return f"""
-You are generating a small Python function for a local CLI tool called aifn.
+You are generating a small {language} function for a local CLI tool called aifn.
 
 Return ONLY a valid JSON object with exactly these keys:
-- canonical_name: snake_case Python function name
+- canonical_name: snake_case function name
 - description: short human-readable description
-- signature: Python-like signature string
+- signature: callable signature string for the generated language
 - tags: array of short strings
-- code: complete Python source code defining the canonical function
+- code: complete source code defining the canonical function in {language}
 - tests: complete pytest source code for the function
 
 Rules:
-- Generate small, boring, deterministic Python.
-- Prefer pure functions: no filesystem, network, subprocess, eval, exec, environment variables, secrets, or shell calls.
-- Use only the Python standard library unless the requested task clearly requires otherwise.
-- Function arguments are received from the CLI as strings, so parse them inside the function when needed.
-- Generated functions must work naturally with shell pipelines: when called with one string argument, treat it as the primary input value.
-- The code must define a function named exactly canonical_name.
-- Tests must load the function from `.aifn/functions/<canonical_name>.py` using importlib.util and pathlib.
+- {rules}
+- {test_hint}
 - Do not include markdown fences.
 - Do not include explanations outside JSON.
 
 Requested function name: {requested_name}
+Requested language: {language}
 CLI args from current call: {json.dumps(args)}
 Optional user description: {description or ""}
 Existing capabilities: {json.dumps(existing_capabilities, indent=2)}
@@ -365,31 +403,31 @@ def build_edit_prompt(
     current_tests: str,
     description: str | None,
     existing_capabilities: list[dict[str, Any]],
+    language: str,
 ) -> str:
+    rules = generation_rules_for(language)
+    test_hint = generated_test_hint_for(language, requested_name)
     return f"""
-You are updating an existing Python function for a local CLI tool called aifn.
+You are updating an existing {language} function for a local CLI tool called aifn.
 
 Return ONLY a valid JSON object with exactly these keys:
-- canonical_name: snake_case Python function name
+- canonical_name: snake_case function name
 - description: short human-readable description
-- signature: Python-like signature string
+- signature: callable signature string for the generated language
 - tags: array of short strings
-- code: complete Python source code defining the canonical function
+- code: complete source code defining the canonical function in {language}
 - tests: complete pytest source code for the function
 
 Rules:
 - Keep the canonical function name exactly {requested_name}.
-- Generate small, boring, deterministic Python.
-- Prefer pure functions: no filesystem, network, subprocess, eval, exec, environment variables, secrets, or shell calls.
-- Use only the Python standard library unless the requested task clearly requires otherwise.
-- Function arguments are received from the CLI as strings, so parse them inside the function when needed.
-- Generated functions must work naturally with shell pipelines: when called with one string argument, treat it as the primary input value.
+- {rules}
 - Update the existing code and tests instead of replacing them with an unrelated implementation.
-- Tests must load the function from `.aifn/functions/<canonical_name>.py` using importlib.util and pathlib.
+- {test_hint}
 - Do not include markdown fences.
 - Do not include explanations outside JSON.
 
 Requested function name: {requested_name}
+Requested language: {language}
 CLI args from current call: {json.dumps(args)}
 Requested change: {description or ''}
 Existing capabilities: {json.dumps(existing_capabilities, indent=2)}
@@ -415,7 +453,12 @@ def parse_json_object(text: str) -> dict[str, Any]:
     return json.loads(cleaned[start : end + 1])
 
 
-def validate_generated_code(canonical_name: str, code: str) -> None:
+def validate_generated_code(
+    canonical_name: str,
+    code: str,
+    *,
+    language: str = "python",
+) -> None:
     forbidden = [
         "subprocess",
         "os.system",
@@ -431,9 +474,50 @@ def validate_generated_code(canonical_name: str, code: str) -> None:
             f"Generated code contains forbidden token(s): {', '.join(found)}"
         )
 
+    if language == "bash":
+        result = subprocess.run(
+            ["bash", "-n"],
+            input=code,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise ValueError(result.stderr.strip() or "Generated bash code is invalid")
+        return
+
     compile(code, f"<generated {canonical_name}>", "exec")
     if f"def {canonical_name}" not in code:
         raise ValueError(f"Generated code must define function {canonical_name!r}")
+
+
+def generation_rules_for(language: str) -> str:
+    if language == "bash":
+        return (
+            "Generate small, boring, deterministic Bash. Prefer portable shell builtins "
+            "and common POSIX utilities. Avoid network access, package installation, "
+            "subshell-heavy complexity, reading secrets, or modifying files outside explicit intent. "
+            "Arguments arrive as CLI strings; when a single argument is provided, treat it as the primary piped input."
+        )
+    return (
+        "Generate small, boring, deterministic Python. Prefer pure functions: no filesystem, network, subprocess, eval, exec, environment variables, secrets, or shell calls. "
+        "Use only the Python standard library unless the requested task clearly requires otherwise. "
+        "Function arguments are received from the CLI as strings, so parse them inside the function when needed. "
+        "Generated functions must work naturally with shell pipelines: when called with one string argument, treat it as the primary input value. "
+        "The code must define a function named exactly canonical_name."
+    )
+
+
+def generated_test_hint_for(language: str, requested_name: str) -> str:
+    if language == "bash":
+        return (
+            "Tests must use pytest and call aifn.runner.run_entrypoint with "
+            f"`.aifn/functions/{requested_name}.sh:{requested_name}`."
+        )
+    return (
+        "Tests must load the function from `.aifn/functions/<canonical_name>.py` "
+        "using importlib.util and pathlib."
+    )
 
 
 def find_programmatic_alias_match(
