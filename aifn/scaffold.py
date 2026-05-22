@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from .paths import functions_dir, project_root, tests_dir
 from .provider import GeneratedFunction
 from .registry import FunctionRecord, Registry
@@ -63,3 +65,30 @@ def remove_generated_function(record: FunctionRecord, registry: Registry) -> Non
     test_file.unlink(missing_ok=True)
     registry.records.pop(record.canonical_name, None)
     registry.save()
+
+
+def rename_generated_function(
+    record: FunctionRecord, new_name: str, registry: Registry
+) -> FunctionRecord:
+    function_file, function_name = resolve_entrypoint_path(record.entrypoint)
+    old_name = record.canonical_name
+    renamed_function_file = function_file.with_name(f"{new_name}.py")
+    old_test_file = tests_dir() / f"test_{old_name}.py"
+    renamed_test_file = tests_dir() / f"test_{new_name}.py"
+
+    if renamed_function_file != function_file:
+        function_file.replace(renamed_function_file)
+    if old_test_file.exists() and renamed_test_file != old_test_file:
+        old_test_file.replace(renamed_test_file)
+
+    record = registry.rename(record, new_name)
+    record.entrypoint = (
+        f"{_rename_entrypoint_path(record.entrypoint, new_name)}:{function_name}"
+    )
+    registry.save()
+    return record
+
+
+def _rename_entrypoint_path(entrypoint: str, new_name: str) -> str:
+    path_text, _ = entrypoint.split(":", maxsplit=1)
+    return str(Path(path_text).with_name(f"{new_name}.py"))

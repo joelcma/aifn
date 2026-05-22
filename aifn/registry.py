@@ -87,6 +87,19 @@ class Registry:
             record.aliases.append(alias)
         return record
 
+    def rename(self, record: FunctionRecord, new_name: str) -> FunctionRecord:
+        old_name = record.canonical_name
+        if new_name == old_name:
+            return record
+
+        self.records.pop(old_name, None)
+        record.canonical_name = new_name
+        record.aliases = [alias for alias in record.aliases if alias != new_name]
+        if old_name not in record.aliases:
+            record.aliases.append(old_name)
+        self.records[new_name] = record
+        return record
+
 
 def init_store(
     provider_name: str | None = None,

@@ -663,6 +663,70 @@ def test_remove_respects_confirmation_decline(monkeypatch, tmp_path):
     assert test_file.exists() is True
 
 
+def test_rename_moves_files_and_preserves_old_name_as_alias(monkeypatch, tmp_path):
+    registry = Registry(path=tmp_path / "registry.json")
+    record = FunctionRecord(
+        canonical_name="slugify",
+        entrypoint="functions/slugify.py:slugify",
+        description="Convert text to a slug",
+    )
+    registry.add(record)
+
+    function_file = tmp_path / "slugify.py"
+    function_file.write_text("def slugify(*args):\n    return ''\n", encoding="utf-8")
+    test_file = tmp_path / "test_slugify.py"
+    test_file.write_text("def test_slugify():\n    assert True\n", encoding="utf-8")
+
+    monkeypatch.setattr("aifn.cli.Registry.load", lambda: registry)
+    monkeypatch.setattr(
+        "aifn.scaffold.resolve_entrypoint_path",
+        lambda entrypoint: (function_file, "slugify"),
+    )
+    monkeypatch.setattr("aifn.scaffold.tests_dir", lambda: tmp_path)
+
+    result = runner.invoke(app, ["rename", "slugify", "make_slug", "--yes"])
+
+    renamed_function_file = tmp_path / "make_slug.py"
+    renamed_test_file = tmp_path / "test_make_slug.py"
+    assert result.exit_code == 0
+    assert "Renamed" in result.output
+    assert "make_slug" in registry.records
+    assert registry.records["make_slug"].aliases == ["slugify"]
+    assert registry.records["make_slug"].entrypoint == "functions/make_slug.py:slugify"
+    assert renamed_function_file.exists() is True
+    assert renamed_test_file.exists() is True
+    assert function_file.exists() is False
+    assert test_file.exists() is False
+
+
+def test_rename_can_promote_existing_alias_to_canonical_name(monkeypatch, tmp_path):
+    registry = Registry(path=tmp_path / "registry.json")
+    record = FunctionRecord(
+        canonical_name="slugify",
+        entrypoint="functions/slugify.py:slugify",
+        description="Convert text to a slug",
+        aliases=["make_slug"],
+    )
+    registry.add(record)
+
+    function_file = tmp_path / "slugify.py"
+    function_file.write_text("def slugify(*args):\n    return ''\n", encoding="utf-8")
+    test_file = tmp_path / "test_slugify.py"
+    test_file.write_text("def test_slugify():\n    assert True\n", encoding="utf-8")
+
+    monkeypatch.setattr("aifn.cli.Registry.load", lambda: registry)
+    monkeypatch.setattr(
+        "aifn.scaffold.resolve_entrypoint_path",
+        lambda entrypoint: (function_file, "slugify"),
+    )
+    monkeypatch.setattr("aifn.scaffold.tests_dir", lambda: tmp_path)
+
+    result = runner.invoke(app, ["rename", "slugify", "make_slug", "--yes"])
+
+    assert result.exit_code == 0
+    assert sorted(registry.records["make_slug"].aliases) == ["slugify"]
+
+
 def test_resolve_call_args_uses_piped_stdin_when_no_args_are_provided(monkeypatch):
     class FakeStdin(StringIO):
         def isatty(self) -> bool:

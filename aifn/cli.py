@@ -18,6 +18,7 @@ from .registry import Registry, init_store
 from .runner import InvocationArgumentError, resolve_entrypoint_path, run_entrypoint
 from .scaffold import (
     remove_generated_function,
+    rename_generated_function,
     update_generated_function,
     write_generated_function,
 )
@@ -535,6 +536,45 @@ def remove(
 
     remove_generated_function(record, registry)
     console.print(f"Removed [bold]{record.canonical_name}[/bold]")
+
+
+@app.command()
+def rename(
+    name: str = typer.Argument(..., help=FUNCTION_NAME_HELP),
+    new_name: str = typer.Argument(..., help="New canonical function name"),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Rename without interactive confirmation",
+    ),
+) -> None:
+    """Rename a registered function and preserve the old name as an alias."""
+    registry = Registry.load()
+    record = registry.find(name)
+    if not record:
+        console.print(f"No function found for {name!r}")
+        raise typer.Exit(code=1)
+
+    existing = registry.find(new_name)
+    if existing is not None and existing is not record:
+        console.print(f"A function already exists for {new_name!r}")
+        raise typer.Exit(code=1)
+
+    if new_name == record.canonical_name:
+        console.print(f"[bold]{new_name}[/bold] is already the canonical name")
+        return
+
+    if not yes and not typer.confirm(
+        f"Rename function {record.canonical_name!r} to {new_name!r}?"
+    ):
+        console.print("No files were renamed.")
+        raise typer.Exit(code=1)
+
+    renamed_record = rename_generated_function(record, new_name, registry)
+    console.print(
+        f"Renamed [bold]{name}[/bold] -> [bold]{renamed_record.canonical_name}[/bold]"
+    )
 
 
 @app.command()
